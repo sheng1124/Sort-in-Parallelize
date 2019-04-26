@@ -366,15 +366,22 @@ void DataSet::quickSortRecur(int front, int end)
 	}
 }
 
+int qcompare(const void *a, const void *b)
+{
+	int a_ = *(int *)a;
+	int b_ = *(int *)b;
+	
+	return (a_ - b_);
+}
+
 const DataSet & DataSet::quickSort()
 {
 	int size = list.size();
-	(*this).quickSortRecur(0, size - 1);
+	//(*this).quickSortRecur(0, size - 1);
+	qsort(&list[0], size, sizeof(int), qcompare);
+	
 	return *this;
 }
-
-
-
 
 
 struct timespec DataSet::t_start, DataSet::t_end;

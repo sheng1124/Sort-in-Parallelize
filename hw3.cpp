@@ -4,368 +4,152 @@
 #include <cstdlib>
 #include <pthread.h>
 #include <vector>
-#include <queue>
-#include <unistd.h>
 #include <time.h>
 #define NUM_THREAD 8
+using namespace std;
 
-void * pd1(void *aug);
-void * pd2(void *aug);
-void * pd3(void *aug);
+class Chronometer;
+class DataSet;
+struct ThreadPara;
+int qcompare(const void *a, const void *b);
+void * pd1(void *para);
+void * pd2(void *para);
+
 pthread_t threads[NUM_THREAD];
 pthread_mutex_t critial_mutex = PTHREAD_MUTEX_INITIALIZER;
-pthread_mutex_t queue_mutex[NUM_THREAD] = PTHREAD_MUTEX_INITIALIZER;
 volatile int running_threads = 0;
-volatile int notpass_share[2] = {1,1};
-volatile int semaphore1 = NUM_THREAD, semaphore2 = NUM_THREAD, semaphore3 = NUM_THREAD;
-volatile int waitingThread = 0, gate1 = 0, gate2 = 0, gate3 = 0; 
-using namespace std;
+
+struct ThreadPara
+{
+	int threadIndex;
+	DataSet *motherDataSetPtr;
+	DataSet *threadISetPtr;
+	
+	DataSet (*sortedThreadSetPtr)[NUM_THREAD];
+	DataSet (*mergeSetPtr)[NUM_THREAD - 2];
+};
+
+class Chronometer
+{
+public:
+	const Chronometer & setStartTime();
+	double getExeTime();
+private:
+	struct timespec t_start, t_end;
+	double elapsedTime;
+};
+Chronometer A;
+const Chronometer & Chronometer::setStartTime()
+{
+	clock_gettime( CLOCK_REALTIME, &t_start); 
+	return *this;
+}
+
+double Chronometer::getExeTime()
+{
+	clock_gettime( CLOCK_REALTIME, &t_end);
+	// compute and print the elapsed time in millisec
+	elapsedTime = (t_end.tv_sec - t_start.tv_sec) * 1000.0;
+	elapsedTime += (t_end.tv_nsec - t_start.tv_nsec) / 1000000.0;
+	cout << "Sequential elapsedTime: " << elapsedTime << " ms" << endl;
+	return elapsedTime;
+}
 
 class DataSet
 {
 public:
 	vector<int> list;
+	int size_;
+	int maxSize_;
 	
 	DataSet(int size);
-	void print() const;
+	const DataSet & set(int size, int value);
 	const DataSet & randomize();
-	void setStartTime(){ clock_gettime( CLOCK_REALTIME, &t_start); }
-	double getExeTime();
+	void print() const;
 	bool isSame(const DataSet & co) const;
+	const DataSet & assign(const DataSet & co);
+	const DataSet & qSort();
 	
-	const DataSet & copy(DataSet & co);
-	const DataSet & oddEvenSort();
-	const DataSet & oddEvenPthread();
-	const DataSet & quickSort();
 	const DataSet & qSortThreadMerge();
 private:
-	static struct timespec t_start, t_end;
-	static double elapsedTime;
 	void swap(int *a, int *b);
-	int partition(int front, int end);
-	void quickSortRecur(int front, int end);
 };
 
-struct threadAug
+DataSet::DataSet(int size)
 {
-	vector<int> *listPtr;
-	int threadIndex;
-	int listSize;
-	DataSet *threadDataSet;
-	vector<int> (*threadMergeQueue)[NUM_THREAD - 2];
-	DataSet (*threadMergeList)[NUM_THREAD];
-};
-
-void * pd2(void *aug)
-{
-	struct threadAug *aug_ = static_cast<struct threadAug*>(aug) ;
-	vector<int> *listPtr = (*aug_).listPtr;
-	int threadIndex = (*aug_).threadIndex;
-	DataSet *threadDataSet = (*aug_).threadDataSet;
-	int size = (*listPtr).size();
-	
-	(*threadDataSet).list.reserve(size / NUM_THREAD + 1);
-	
-	for(int i = threadIndex; i < size; i += NUM_THREAD)
-	{
-		(*threadDataSet).list.push_back((*listPtr)[i]); 
-	}
-	
-	(*threadDataSet).quickSort();
-	/*
-	for(int i = 0; i < (*threadDataSet).list.size(); i++)
-	{
-		pthread_mutex_lock(&critial_mutex);
-		cout << "id:" << threadIndex<<" contain " << (*threadDataSet).list[i] << endl;
-		pthread_mutex_unlock(&critial_mutex);
-	}*/
-	
-	pthread_mutex_lock(&critial_mutex);
-	running_threads--;
-	pthread_mutex_unlock(&critial_mutex);
-	pthread_exit(NULL);
+	list.assign(size, 0);
+	maxSize_ = size;
 }
 
-void * pd3(void *aug)
-{ 
-	struct threadAug *aug_ = static_cast<struct threadAug*>(aug) ;
-	vector<int> *listPtr = (*aug_).listPtr;
-	int threadIndex = (*aug_).threadIndex;
-	DataSet (*threadDataSet)[NUM_THREAD] = (*aug_).threadMergeList;
-	vector<int> (*threadMergeQueue)[NUM_THREAD - 2] = (*aug_).threadMergeQueue;
-	int listSize = (*aug_).listSize;
+const DataSet & DataSet::set(int size, int value)
+{
+	list.clear();
+	list.assign(size, value);
 	
-	if(threadIndex < NUM_THREAD / 2)
+	maxSize_ = size;
+	size_ = maxSize_;
+	return *this;
+}
+
+const DataSet & DataSet::randomize()
+{
+	for(int i = 0; i < maxSize_; i++)
 	{
-		
-		int i = 0, j = 0;
-		vector<int> *listPtri = &((*threadDataSet)[2 * threadIndex].list);
-		vector<int> *listPtrj = &((*threadDataSet)[2 * threadIndex + 1].list);
-		
-		int sizei = (*threadDataSet)[2 * threadIndex].list.size();
-		int sizej = (*threadDataSet)[2 * threadIndex + 1].list.size();
-		(*threadMergeQueue)[threadIndex].reserve(sizei + sizej);
-		
-		while(i < sizei && j < sizej)
-		{
-			if((*listPtri)[i] < (*listPtrj)[j])
-			{
-				(*threadMergeQueue)[threadIndex].push_back((*listPtri)[i]);
-				i++;
-			}
-			else
-			{
-				(*threadMergeQueue)[threadIndex].push_back((*listPtrj)[j]);
-				j++;
-			}
-		}
-		
-		while(i < sizei)
-		{
-			(*threadMergeQueue)[threadIndex].push_back((*listPtri)[i]);
-			i++;
-		}
-		
-		while(j < sizej)
-		{
-			(*threadMergeQueue)[threadIndex].push_back((*listPtrj)[j]);
-			j++;
-		}
-		/*
-		for(int i = 0; (*threadMergeQueue)[threadIndex].size() != 0; i++)
-		{
-			pthread_mutex_lock(&critial_mutex);
-			int x = (*threadMergeQueue)[threadIndex].front();
-			(*threadMergeQueue)[threadIndex].pop();
-			cout << "id:" << threadIndex<<" contain " << x << endl;
-			pthread_mutex_unlock(&critial_mutex);
-		}*/
-		
+		list[i] = rand() % 100000;
 	}
-	else if(threadIndex != NUM_THREAD - 2)
+	size_ = maxSize_;
+	return *this;
+}
+
+void DataSet::print() const
+{
+	for(int i = 0; i < size_; i++)
 	{
-		int queueiIndex = 2 * threadIndex - NUM_THREAD;
-		int queuejIndex = 2 * threadIndex - NUM_THREAD + 1;
-		vector<int> *queuePtri = &((*threadMergeQueue)[queueiIndex]);
-		vector<int> *queuePtrj = &((*threadMergeQueue)[queuejIndex]);
-		
-		int sizei = (*threadDataSet)[queueiIndex * 2].list.size() + (*threadDataSet)[queueiIndex * 2 + 1].list.size();
-		int sizej = (*threadDataSet)[queuejIndex * 2].list.size() + (*threadDataSet)[queuejIndex * 2 + 1].list.size();
-		
-		(*threadMergeQueue)[threadIndex].reserve(sizei + sizej);
-		
-		int i = 0, j = 0;
-		do
-		{
-			while( i >= (*queuePtri).size() || j >= (*queuePtrj).size() )
-			{
-				if(i == sizei || j == sizej)
-				{
-					break;
-				}
-			}
-			
-			if((*queuePtri).size() > i && (*queuePtrj).size() > j)
-			{
-				if((*queuePtri)[i] < (*queuePtrj)[j])
-				{
-					(*threadMergeQueue)[threadIndex].push_back((*queuePtri)[i]);
-					i++;
-				}
-				else
-				{
-					(*threadMergeQueue)[threadIndex].push_back((*queuePtrj)[j]);
-					j++;
-				}
-			}
-		}
-		while(i < sizei && j < sizej);
-		
-		while(i < sizei)
-		{
-			(*threadMergeQueue)[threadIndex].push_back((*queuePtri)[i]);
-			i++;
-		}
-		while(j < sizej)
-		{
-			(*threadMergeQueue)[threadIndex].push_back((*queuePtrj)[j]);
-			j++;
-		}
-		
-		/*
-		for(int i = 0; i < (*threadMergeQueue)[threadIndex].size() ; i++)
-		{
-			pthread_mutex_lock(&critial_mutex);
-			
-			cout << "id:" << threadIndex<<"index "<< i <<" contain " << (*threadMergeQueue)[threadIndex][i] << endl;
-			pthread_mutex_unlock(&critial_mutex);
-		}*/
-		
+		cout << list[i] << " ";
+	}
+	cout << endl;
+}
+
+bool DataSet::isSame(const DataSet & co) const
+{
+	if(size_ != co.size_)
+	{
+		return false;
 	}
 	else
 	{
-		int queueiIndex = threadIndex - 2;
-		int queuejIndex = threadIndex - 1;
-		
-		vector<int> *queuePtri = &(*threadMergeQueue)[queueiIndex];
-		vector<int> *queuePtrj = &(*threadMergeQueue)[queuejIndex];
-		
-		int sizei = 0;
-		int sizej = 0;
-		
-		for(int i = 0; i < NUM_THREAD / 2; i++)
+		for(int i = 0; i < size_; i++)
 		{
-			sizei += (*threadDataSet)[i].list.size();
-		}
-		
-		for(int j = NUM_THREAD / 2; j < NUM_THREAD; j++)
-		{
-			sizej += (*threadDataSet)[j].list.size();
-		}
-		
-		(*listPtr).reserve(sizei + sizej);
-		
-		int i = 0, j =0;
-		
-		do
-		{
-			while( i >= (*queuePtri).size() || j >= (*queuePtrj).size() )
+			if(list[i] != co.list[i])
 			{
-				if(i == sizei || j == sizej)
-				{
-					break;
-				}
-			}
-			
-			if((*queuePtri).size() > i && (*queuePtrj).size() > j)
-			{
-				if((*queuePtri)[i] < (*queuePtrj)[j])
-				{
-					(*listPtr).push_back((*queuePtri)[i]);
-					i++;
-				}
-				else
-				{
-					(*listPtr).push_back((*queuePtrj)[j]);
-					j++;
-				}
+				return false;
 			}
 		}
-		while(i < sizei && j < sizej);
-		
-		while(i < sizei)
-		{
-			(*listPtr).push_back((*queuePtri)[i]);
-			i++;
-		}
-		while(j < sizej)
-		{
-			(*listPtr).push_back((*queuePtrj)[j]);
-			j++;
-		}
-		/*
-		for(int i = 0; i < (*listPtr).size() ; i++)
-		{
-			pthread_mutex_lock(&critial_mutex);
-			
-			cout << "id:" << threadIndex<<"index "<< i <<" contain " << (*listPtr)[i] << endl;
-			pthread_mutex_unlock(&critial_mutex);
-		}*/
 	}
-
-	pthread_mutex_lock(&critial_mutex);
-	running_threads--;
-	cout << threadIndex << " exit"<<endl;
-	pthread_mutex_unlock(&critial_mutex);
-	pthread_exit(NULL);
+	return true;
 }
 
-const DataSet & DataSet::qSortThreadMerge()
+const DataSet & DataSet::assign(const DataSet & co)
 {
-	DataSet threadDataSet[NUM_THREAD](0);
-	
-	for(int i = 0; i < NUM_THREAD; i++)
+	if(size_ != co.size_)
 	{
-		struct threadAug *aug = new struct threadAug;
-		(*aug).listPtr = &list;
-		(*aug).threadIndex = i;
-		(*aug).threadDataSet = &threadDataSet[i];
-		
-		void *aug_ = static_cast<void*>(aug);
-		
-		pthread_mutex_lock(&critial_mutex);
-		running_threads++;
-		pthread_mutex_unlock(&critial_mutex);
-		pthread_create(&threads[i], NULL, pd2, aug_);		
+		size_ = co.size_;
+		maxSize_ = co.maxSize_;
+		list.clear();
+		list.assign(size_, 0);
 	}
-	
-	while(running_threads > 0)
+	for(int i = 0; i < size_; i++)
 	{
-		;
-	}
-	
-	/*for(int i = 0; i < NUM_THREAD; i++)
-	{
-		threadDataSet[i].print();
-		cout << endl;
-	}*/
-
-	vector<int> mergeQueue[NUM_THREAD - 2];
-	int listSize = list.size();
-	list.clear();
-	for(int i = 0; i < NUM_THREAD - 1; i++)
-	{
-		struct threadAug *aug = new struct threadAug;
-		(*aug).listPtr = &list;
-		(*aug).threadIndex = i;
-		(*aug).listSize = listSize;
-		(*aug).threadMergeQueue = &mergeQueue;
-		(*aug).threadMergeList = &threadDataSet;
-		
-		void *aug_ = static_cast<void*>(aug);
-		
-		pthread_mutex_lock(&critial_mutex);
-		running_threads++;
-		pthread_mutex_unlock(&critial_mutex);
-		pthread_create(&threads[i], NULL, pd3, aug_);		
-	}
-	
-	while(running_threads > 0)
-	{
-		;
+		list[i] = co.list[i];
 	}
 	return *this;
 }
 
-int DataSet::partition(int front, int end)
+const DataSet & DataSet::qSort()
 {
-	int pivot = list[end];
-	int i = front - 1;
-	int j;
-	for(j = front; j < end; j++)
-	{
-		if(list[j] < pivot)
-		{
-			i++;
-			swap(&list[i], &list[j]);
-		}
-	}
-	//swap pivot to middle, list[j] is pivot now,list[i] will be greater then pivot
-	i++;
-	swap(&list[i], &list[j]);
-	return i;
+	qsort(&list[0], size_, sizeof(int), qcompare);
+	return *this;
 }
-
-void DataSet::quickSortRecur(int front, int end)
-{
-	if(front < end)
-	{
-		int pivotIndex = partition(front, end);
-		quickSortRecur(pivotIndex + 1, end);
-		quickSortRecur(front, pivotIndex - 1);
-	}
-}
-
 int qcompare(const void *a, const void *b)
 {
 	int a_ = *(int *)a;
@@ -374,127 +158,48 @@ int qcompare(const void *a, const void *b)
 	return (a_ - b_);
 }
 
-const DataSet & DataSet::quickSort()
+const DataSet & DataSet::qSortThreadMerge()
 {
-	int size = list.size();
-	//(*this).quickSortRecur(0, size - 1);
-	qsort(&list[0], size, sizeof(int), qcompare);
+	DataSet threadISet[NUM_THREAD](0);
 	
-	return *this;
-}
-
-
-struct timespec DataSet::t_start, DataSet::t_end;
-double DataSet::elapsedTime;
-
-double DataSet::getExeTime()
-{
-	clock_gettime( CLOCK_REALTIME, &t_end);
-
-	// compute and print the elapsed time in millisec
-	elapsedTime = (t_end.tv_sec - t_start.tv_sec) * 1000.0;
-	elapsedTime += (t_end.tv_nsec - t_start.tv_nsec) / 1000000.0;
-	cout << "Sequential elapsedTime: " << elapsedTime << " ms" << endl;
-	return elapsedTime;
-}
-
-void * pd1(void *aug)
-{
-	struct threadAug *aug_ = static_cast<struct threadAug*>(aug) ;
-	vector<int> *listPtr = (*aug_).listPtr;
-	int threadIndex = (*aug_).threadIndex;
-	int size = (*listPtr).size();
-	int turn = 0;//0 even, 1 odd 
-	
-	do
-	{
-		//需要集合 thread，確保進入判斷式
-		pthread_mutex_lock(&critial_mutex);
-		gate1 = 0;
-		waitingThread++;
-		pthread_mutex_unlock(&critial_mutex);
-		while(waitingThread < NUM_THREAD && gate1 == 0)
-		{
-			//cout <<"11:" << waitingThread  <<endl;
-			//sleep(1);
-		}
-		//保證進入判斷式 所有人都在 waitingThread++ 之後
-		pthread_mutex_lock(&critial_mutex);
-		notpass_share[turn % 2] = 0;//需等待所有 thread 進入回圈判斷式才能執行
-		if(waitingThread == NUM_THREAD)
-		{
-			//只有第一個進入此區的 thread 會清空 waiting,打開大門
-			waitingThread -= NUM_THREAD;
-			gate1 = 1;
-		}
-		pthread_mutex_unlock(&critial_mutex);
-
-		int notpass = 0;
-		for(int j = (threadIndex * 2) + (turn % 2); j < size - 1; j += (2 * NUM_THREAD))
-		{
-			if((*listPtr)[j] > (*listPtr)[j + 1])
-			{
-				int temp = (*listPtr)[j];
-				(*listPtr)[j] = (*listPtr)[j + 1];
-				(*listPtr)[j + 1] = temp;
-				notpass++;
-			}
-			
-			//cout<<" tid" << threadIndex << " : " << (*listPtr)[j] << "  " << (*listPtr)[j + 1] << endl;
-		}
-		
-		pthread_mutex_lock(&critial_mutex);
-		notpass_share[turn % 2] += notpass;
-		pthread_mutex_unlock(&critial_mutex);
-		
-		turn += 1;
-		//cout << "notpass_share " << notpass_share << " notpass " << notpass << endl;
-		
-		
-		//需要集合 thread，notpass_share
-		pthread_mutex_lock(&critial_mutex);
-		gate2 = 0;
-		waitingThread++;
-		pthread_mutex_unlock(&critial_mutex);
-		while(waitingThread < NUM_THREAD && gate2 == 0)
-		{
-			//cout <<"22:" << waitingThread <<endl;
-			//sleep(1);
-		}
-		//保證 notpass_share 是完整的，所有人都在 waitingThread++ 之後
-		pthread_mutex_lock(&critial_mutex);
-		
-		if(waitingThread == NUM_THREAD)
-		{
-			//只有第一個進入此區的 thread 會清空 waiting,打開大門
-			waitingThread -= NUM_THREAD;
-			gate2 = 1;
-		}
-		pthread_mutex_unlock(&critial_mutex);
-		
-	}while(notpass_share[0] > 0 || notpass_share[1] > 0);
-	pthread_mutex_lock(&critial_mutex);
-	running_threads--;
-	pthread_mutex_unlock(&critial_mutex);
-	pthread_exit(NULL);
-}
-
-const DataSet & DataSet::oddEvenPthread()
-{	
 	for(int i = 0; i < NUM_THREAD; i++)
 	{
-		struct threadAug *aug = new struct threadAug;
-		(*aug).listPtr = &list;
-		(*aug).threadIndex = i;
+		struct ThreadPara *para = new struct ThreadPara;
+		(*para).threadIndex = i;
+		(*para).motherDataSetPtr = this;
+		(*para).threadISetPtr = &threadISet[i];
 		
-		void *aug_ = static_cast<void*>(aug);
+		void *para_ = static_cast<void*>(para);
 		
 		pthread_mutex_lock(&critial_mutex);
 		running_threads++;
 		pthread_mutex_unlock(&critial_mutex);
-		pthread_create(&threads[i], NULL, pd1, aug_);		
+		pthread_create(&threads[i], NULL, pd1, para_);		
+	}	
+	while(running_threads > 0)
+	{
+		;
 	}
 	
+	cout<< NUM_THREAD <<" threads sort time ";
+	A.getExeTime();
+	DataSet mergeSet[NUM_THREAD - 2](0);
+		
+	for(int i = 0; i < NUM_THREAD - 1; i++)
+	{
+		struct ThreadPara *para = new struct ThreadPara;
+		(*para).threadIndex = i;
+		(*para).motherDataSetPtr = this;
+		(*para).sortedThreadSetPtr = &threadISet;
+		(*para).mergeSetPtr = &mergeSet;
+		
+		void *para_ = static_cast<void*>(para);
+		
+		pthread_mutex_lock(&critial_mutex);
+		running_threads++;
+		pthread_mutex_unlock(&critial_mutex);
+		pthread_create(&threads[i], NULL, pd2, para_);		
+	}
 	while(running_threads > 0)
 	{
 		;
@@ -503,79 +208,210 @@ const DataSet & DataSet::oddEvenPthread()
 	return *this;
 }
 
-const DataSet & DataSet::oddEvenSort()
+void * pd1(void *para)
 {
-	int size = list.size();
+	struct ThreadPara *para_ = static_cast<struct ThreadPara*>(para);
 	
-	for(int i = 0, notpass = 1; notpass > 0; i++)
+	DataSet *threadISet = (*para_).threadISetPtr;
+	DataSet *motherDataSet = (*para_).motherDataSetPtr;
+	
+	int motherSize_ = (*motherDataSet).size_;
+	int index = (*para_).threadIndex;
+	int start = index * (motherSize_ / NUM_THREAD);
+	int end;
+	
+	if(index != NUM_THREAD - 1)
 	{
-		notpass = 0;
-		for(int j = i % 2; j < size - 1; j += 2)
+		end = (index + 1) * (motherSize_ / NUM_THREAD);
+	}
+	else
+	{
+		end = motherSize_;
+	}
+	
+	(*threadISet).set(end - start, 0);
+	
+	for(int i = start; i < end; i++)
+	{
+		(*threadISet).list[i - start] = (*motherDataSet).list[i];
+	}
+	
+	(*threadISet).qSort();
+
+	pthread_mutex_lock(&critial_mutex);
+	running_threads--;
+	pthread_mutex_unlock(&critial_mutex);
+	pthread_exit(NULL);
+}
+
+void * pd2(void *para)
+{ 
+
+	struct ThreadPara *para_ = static_cast<struct ThreadPara*>(para) ;
+	DataSet *motherDataSet = (*para_).motherDataSetPtr;
+	DataSet (*sortedThreadSet)[NUM_THREAD] = (*para_).sortedThreadSetPtr;
+	DataSet (*mergeSet)[NUM_THREAD - 2] = (*para_).mergeSetPtr;
+	
+	int motherSize_ = (*motherDataSet).size_;
+	int threadIndex = (*para_).threadIndex;
+	
+	if(threadIndex < NUM_THREAD / 2)//8set merge into 4set
+	{
+	
+		vector<int> *listPtri = &((*sortedThreadSet)[2 * threadIndex].list);
+		vector<int> *listPtrj = &((*sortedThreadSet)[2 * threadIndex + 1].list);
+		
+		int sizei = (*sortedThreadSet)[2 * threadIndex].size_;
+		int sizej = (*sortedThreadSet)[2 * threadIndex + 1].size_;
+		int *size_ = &((*mergeSet)[threadIndex].size_);
+		
+		(*mergeSet)[threadIndex].set(sizei + sizej, 0);
+		int i = 0, j = 0;
+		*size_ = 0;
+	
+		while(i < sizei && j < sizej)
 		{
-			if(list[j] > list[j + 1])
-			{
-				(*this).swap(&list[j], &list[j + 1]);
-				notpass++;
+			if((*listPtri)[i] <= (*listPtrj)[j])
+			{ 
+				(*mergeSet)[threadIndex].list[*size_] = (*listPtri)[i];
+				(*size_)++;
+				i++;
 			}
+			else
+			{
+				(*mergeSet)[threadIndex].list[*size_] = (*listPtrj)[j];
+				(*size_)++;
+				j++;
+			}
+		}
+		
+		while(i < sizei)
+		{
+			(*mergeSet)[threadIndex].list[*size_] = (*listPtri)[i];
+			(*size_)++;
+			i++;
+		}
+		
+		while(j < sizej)
+		{
+			(*mergeSet)[threadIndex].list[*size_] = (*listPtrj)[j];
+			(*size_)++;
+			j++;
+		}		
+	}
+	else if(threadIndex != NUM_THREAD - 2)//4set merge into 2set
+	{
+		int queueiIndex = 2 * threadIndex - NUM_THREAD;
+		int queuejIndex = 2 * threadIndex - NUM_THREAD + 1;
+		DataSet *queuePtri = &((*mergeSet)[queueiIndex]);
+		DataSet *queuePtrj = &((*mergeSet)[queuejIndex]);
+		
+		int sizei = (*sortedThreadSet)[queueiIndex * 2].size_ + (*sortedThreadSet)[queueiIndex * 2 + 1].size_;
+		int sizej = (*sortedThreadSet)[queuejIndex * 2].size_ + (*sortedThreadSet)[queuejIndex * 2 + 1].size_;
+		int *size_ = &((*mergeSet)[threadIndex].size_);
+		
+		(*mergeSet)[threadIndex].set(sizei + sizej, 0);
+		int i = 0, j = 0;
+		*size_ = 0;
+		
+		do
+		{
+			if((*queuePtri).size_ > i && (*queuePtrj).size_ > j)
+			{
+				if((*queuePtri).list[i] <= (*queuePtrj).list[j])
+				{
+					(*mergeSet)[threadIndex].list[*size_] = (*queuePtri).list[i];
+					(*size_)++;
+					i++;
+				}
+				else
+				{
+					(*mergeSet)[threadIndex].list[*size_] = (*queuePtrj).list[j];
+					(*size_)++;
+					j++;
+				}
+			}
+		}
+		while(i < sizei && j < sizej);
+		
+		while(i < sizei)
+		{
+			(*mergeSet)[threadIndex].list[*size_] = (*queuePtri).list[i];
+			(*size_)++;
+			i++;
+		}
+		while(j < sizej)
+		{
+			(*mergeSet)[threadIndex].list[*size_] = (*queuePtrj).list[j];
+			(*size_)++;
+			j++;
+		}
+	}
+	else//2set merge into 1set
+	{
+		int queueiIndex = threadIndex - 2;
+		int queuejIndex = threadIndex - 1;
+		
+		DataSet *queuePtri = &((*mergeSet)[queueiIndex]);
+		DataSet *queuePtrj = &((*mergeSet)[queuejIndex]);
+		
+		int sizei = 0;
+		int sizej = 0;
+		for(int i = 0; i < NUM_THREAD / 2; i++)
+		{
+			sizei += (*sortedThreadSet)[i].size_;
+		}
+		
+		for(int j = NUM_THREAD / 2; j < NUM_THREAD; j++)
+		{
+			sizej += (*sortedThreadSet)[j].size_;
+		}
+		
+		int *size_ = &((*motherDataSet).size_);
+		int i = 0, j =0;
+		*size_ = 0;
+		do
+		{
+			if((*queuePtri).size_ > i && (*queuePtrj).size_ > j)
+			{
+				if((*queuePtri).list[i] <= (*queuePtrj).list[j])
+				{
+					(*motherDataSet).list[*size_] = (*queuePtri).list[i];
+					(*size_)++;
+					i++;
+				}
+				else
+				{
+					(*motherDataSet).list[*size_] = (*queuePtrj).list[j];
+					(*size_)++;
+					j++;
+				}
+			}
+		}
+		while(i < sizei && j < sizej);
+		
+		while(i < sizei)
+		{
+			(*motherDataSet).list[*size_] = (*queuePtri).list[i];
+			(*size_)++;
+			i++;
+		}
+		while(j < sizej)
+		{
+			(*motherDataSet).list[*size_] = (*queuePtrj).list[j];
+			(*size_)++;
+			j++;
 		}
 	}
 	
-	return *this;
+	pthread_mutex_lock(&critial_mutex);
+	running_threads--;
+	cout << threadIndex << " exit"<<endl;
+	pthread_mutex_unlock(&critial_mutex);
+	pthread_exit(NULL);
 }
 
-void DataSet::swap(int *a, int *b)
-{
-	int temp = *a;
-	*a = *b;
-	*b = temp;
-}
 
-DataSet::DataSet(int size)
-{
-	list.assign(size, 0);
-}
-
-const DataSet & DataSet::copy(DataSet & co)
-{
-	int size = list.size();
-	for(int i = 0; i < size; i++)
-	{
-		list[i] = co.list[i];
-	}
-	return *this;
-}
-
-bool DataSet::isSame(const DataSet & co) const
-{
-	int size = list.size();
-	for(int i = 0; i < size; i++)
-	{
-		if(list[i] != co.list[i])
-			return false;
-	}
-	return true;
-}
-
-const DataSet & DataSet::randomize()
-{
-	int size = list.size();
-	
-	for(int i = 0; i < size; i++)
-	{
-		list[i] = rand() % 100;
-	}
-	return *this;
-}
-
-void DataSet::print() const
-{
-	int size = list.size();
-	for(int i = 0; i < size; i++)
-	{
-		cout << list[i] << " ";
-	}
-	cout << endl;
-}
 
 int main()
 {
@@ -586,26 +422,24 @@ int main()
 	{
 		DataSet test(n);
 		DataSet golden(n);
+		test.randomize();
+		golden.assign(test);
+		
 		if(n < 100)
 		{
 			cout << "原本的陣列" << endl;
-			test.randomize().print();
+			test.print();
 		}
 		
-		golden.copy(test);
 		cout << "Sorted by no parallel" <<endl;
-		
-		golden.setStartTime();
-		//golden.oddEvenSort();
-		golden.quickSort();
-		golden.getExeTime();
+		A.setStartTime();
+		golden.qSort();
+		A.getExeTime();
 		cout << endl << "Sorted by parallel" <<endl;
-		test.setStartTime();
-		//test.oddEvenPthread();
-		//test.oddEvenPthread();
+		A.setStartTime();
 		test.qSortThreadMerge();
-		test.getExeTime();
-		
+		A.getExeTime();
+		cout << "HW2測試結果: ";
 		if(test.isSame(golden))
 		{
 			cout << "結果一致"<< endl;

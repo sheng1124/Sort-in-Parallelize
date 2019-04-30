@@ -1,2 +1,8 @@
 # SortParallel
-using sort : quicksort, thread : 8
+using sort : qsort in c library
+using thread number : 8
+
+# compile
+```linux=
+$ ./compile.sh
+```
